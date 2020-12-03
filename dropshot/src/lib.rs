@@ -503,7 +503,7 @@ pub use api_description::ApiEndpoint;
 pub use api_description::ApiEndpointParameter;
 pub use api_description::ApiEndpointParameterLocation;
 pub use api_description::ApiEndpointResponse;
-pub use config::ConfigDropshot;
+pub use config::{ConfigDropshot, RequestBodyMaxBytes};
 pub use error::HttpError;
 pub use error::HttpErrorResponseBody;
 pub use handler::Extractor;
