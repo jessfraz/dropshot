@@ -45,4 +45,13 @@ use std::net::SocketAddr;
 pub struct ConfigDropshot {
     /** IP address and TCP port to which to bind for accepting connections */
     pub bind_address: SocketAddr,
+    /** maximum allowed size of a request body, defaults to 1024 */
+    pub request_body_max_bytes: RequestBodyMaxBytes,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct RequestBodyMaxBytes(pub usize);
+
+impl Default for RequestBodyMaxBytes {
+    fn default() -> Self { RequestBodyMaxBytes(1024) }
 }

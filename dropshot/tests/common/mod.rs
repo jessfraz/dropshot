@@ -24,6 +24,7 @@ pub fn test_setup(test_name: &str, api: ApiDescription) -> TestContext {
      */
     let config_dropshot = ConfigDropshot {
         bind_address: "127.0.0.1:0".parse().unwrap(),
+        request_body_max_bytes: Default::default(),
     };
 
     let config_logging = ConfigLogging::File {
