@@ -64,6 +64,7 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use serde_qs::Config as QSConfig;
 
 /**
  * Type alias for the result returned by HTTP handler functions.
@@ -534,10 +535,15 @@ where
     QueryType: DeserializeOwned + JsonSchema + Send + Sync,
 {
     let raw_query_string = request.uri().query().unwrap_or("");
-    /*
-     * TODO-correctness: are query strings defined to be urlencoded in this way?
-     */
-    match serde_urlencoded::from_str(raw_query_string) {
+    // Decode the query string.
+    let query_string = urlencoding::decode(raw_query_string).unwrap_or_default();
+
+    // For to work, it's necessary to parse the query string
+    // in non-strict mode, to allow parsing of url_encoded square brackets
+    // in the key. See the lib.rs documentation for why.
+    let qs_non_strict = QSConfig::new(10, false);
+
+    match qs_non_strict.deserialize_str(&query_string) {
         Ok(q) => Ok(Query {
             inner: q,
         }),
