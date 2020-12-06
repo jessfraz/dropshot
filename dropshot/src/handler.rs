@@ -535,8 +535,10 @@ where
     QueryType: DeserializeOwned + JsonSchema + Send + Sync,
 {
     let raw_query_string = request.uri().query().unwrap_or("");
+    println!("raw query string: {:?}", raw_query_string);
     // Decode the query string.
     let query_string = urlencoding::decode(raw_query_string).unwrap_or_default();
+    println!("query string decoded: {:?}", query_string);
 
     // For to work, it's necessary to parse the query string
     // in non-strict mode, to allow parsing of url_encoded square brackets
