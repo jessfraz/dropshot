@@ -53,6 +53,7 @@ use hyper::Response;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde_qs::Config as QSConfig;
 use slog::Logger;
 use std::cmp::min;
 use std::collections::BTreeMap;
@@ -64,7 +65,6 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use serde_qs::Config as QSConfig;
 
 /**
  * Type alias for the result returned by HTTP handler functions.
@@ -171,9 +171,7 @@ pub trait Extractor: Send + Sync + Sized {
     /**
      * Construct an instance of this type from a `RequestContext`.
      */
-    async fn from_request(
-        rqctx: Arc<RequestContext>,
-    ) -> Result<Self, HttpError>;
+    async fn from_request(rqctx: Arc<RequestContext>) -> Result<Self, HttpError>;
 
     fn metadata() -> Vec<ApiEndpointParameter>;
 }
@@ -225,17 +223,12 @@ impl_extractor_for_tuple!(T1, T2, T3);
  * treat different handlers interchangeably.  See `RouteHandler` below.
  */
 #[async_trait]
-pub trait HttpHandlerFunc<FuncParams, ResponseType>:
-    Send + Sync + 'static
+pub trait HttpHandlerFunc<FuncParams, ResponseType>: Send + Sync + 'static
 where
     FuncParams: Extractor,
     ResponseType: HttpResponse + Send + Sync + 'static,
 {
-    async fn handle_request(
-        &self,
-        rqctx: Arc<RequestContext>,
-        p: FuncParams,
-    ) -> HttpHandlerResult;
+    async fn handle_request(&self, rqctx: Arc<RequestContext>, p: FuncParams) -> HttpHandlerResult;
 }
 
 /**
@@ -431,10 +424,7 @@ where
         &self.label
     }
 
-    async fn handle_request(
-        &self,
-        rqctx_raw: RequestContext,
-    ) -> HttpHandlerResult {
+    async fn handle_request(&self, rqctx_raw: RequestContext) -> HttpHandlerResult {
         /*
          * This is where the magic happens: in the code below, `funcparams` has
          * type `FuncParams`, which is a tuple type describing the extractor
@@ -464,8 +454,7 @@ where
  * Public interfaces
  */
 
-impl<HandlerType, FuncParams, ResponseType>
-    HttpRouteHandler<HandlerType, FuncParams, ResponseType>
+impl<HandlerType, FuncParams, ResponseType> HttpRouteHandler<HandlerType, FuncParams, ResponseType>
 where
     HandlerType: HttpHandlerFunc<FuncParams, ResponseType>,
     FuncParams: Extractor + 'static,
@@ -485,10 +474,7 @@ where
      * signatures, return a RouteHandler that can be used to respond to HTTP
      * requests using this function.
      */
-    pub fn new_with_name(
-        handler: HandlerType,
-        label: &str,
-    ) -> Box<dyn RouteHandler> {
+    pub fn new_with_name(handler: HandlerType, label: &str) -> Box<dyn RouteHandler> {
         Box::new(HttpRouteHandler {
             label: label.to_string(),
             handler,
@@ -528,27 +514,27 @@ impl<QueryType: DeserializeOwned + JsonSchema + Send + Sync> Query<QueryType> {
  * Given an HTTP request, pull out the query string and attempt to deserialize
  * it as an instance of `QueryType`.
  */
-fn http_request_load_query<QueryType>(
-    request: &Request<Body>,
+async fn http_request_load_query<QueryType>(
+    rqctx: Arc<RequestContext>,
 ) -> Result<Query<QueryType>, HttpError>
 where
     QueryType: DeserializeOwned + JsonSchema + Send + Sync,
 {
-    let raw_query_string = request.uri().query().unwrap_or("");
-    println!("raw query string: {:?}", raw_query_string);
-    // Decode the query string.
-    let query_string = urlencoding::decode(raw_query_string).unwrap_or_default();
-    println!("query string decoded: {:?}", query_string);
+
+    let mut request = rqctx.request.lock().await;
+    let server = &rqctx.server;
+
+    let b = http_read_body(request.body_mut(), server.config.request_body_max_bytes)
+        .await
+        .unwrap();
 
     // For to work, it's necessary to parse the query string
     // in non-strict mode, to allow parsing of url_encoded square brackets
     // in the key. See the lib.rs documentation for why.
     let qs_non_strict = QSConfig::new(10, false);
 
-    match qs_non_strict.deserialize_str(&query_string) {
-        Ok(q) => Ok(Query {
-            inner: q,
-        }),
+    match qs_non_strict.deserialize_bytes(&b) {
+        Ok(q) => Ok(Query { inner: q }),
         Err(e) => Err(HttpError::for_bad_request(
             None,
             format!("unable to parse query string: {}", e),
@@ -569,11 +555,8 @@ impl<QueryType> Extractor for Query<QueryType>
 where
     QueryType: JsonSchema + DeserializeOwned + Send + Sync + 'static,
 {
-    async fn from_request(
-        rqctx: Arc<RequestContext>,
-    ) -> Result<Query<QueryType>, HttpError> {
-        let request = rqctx.request.lock().await;
-        http_request_load_query(&request)
+    async fn from_request(rqctx: Arc<RequestContext>) -> Result<Query<QueryType>, HttpError> {
+        http_request_load_query(rqctx).await
     }
 
     fn metadata() -> Vec<ApiEndpointParameter> {
@@ -614,13 +597,9 @@ impl<PathType> Extractor for Path<PathType>
 where
     PathType: DeserializeOwned + JsonSchema + Send + Sync + 'static,
 {
-    async fn from_request(
-        rqctx: Arc<RequestContext>,
-    ) -> Result<Path<PathType>, HttpError> {
+    async fn from_request(rqctx: Arc<RequestContext>) -> Result<Path<PathType>, HttpError> {
         let params: PathType = http_extract_path_params(&rqctx.path_variables)?;
-        Ok(Path {
-            inner: params,
-        })
+        Ok(Path { inner: params })
     }
 
     fn metadata() -> Vec<ApiEndpointParameter> {
@@ -633,18 +612,14 @@ where
  * `JsonSchema` for use with `Query` and `Path` `Extractors`.
  */
 pub(crate) trait GetMetadata {
-    fn metadata(
-        loc: &ApiEndpointParameterLocation,
-    ) -> Vec<ApiEndpointParameter>;
+    fn metadata(loc: &ApiEndpointParameterLocation) -> Vec<ApiEndpointParameter>;
 }
 
 impl<ParamType> GetMetadata for ParamType
 where
     ParamType: JsonSchema,
 {
-    fn metadata(
-        loc: &ApiEndpointParameterLocation,
-    ) -> Vec<ApiEndpointParameter> {
+    fn metadata(loc: &ApiEndpointParameterLocation) -> Vec<ApiEndpointParameter> {
         /*
          * Generate the type for `ParamType` then pluck out each member of
          * the structure to encode as an individual parameter.
@@ -708,9 +683,7 @@ fn schema2parameters(
             extensions: _,
         }) => match definitions.get(refstr) {
             // Recur on the referenced type.
-            Some(refschema) => {
-                schema2parameters(loc, refschema, definitions, required)
-            }
+            Some(refschema) => schema2parameters(loc, refschema, definitions, required),
             // This should not be possible.
             None => panic!("invalid reference {}", refstr),
         },
@@ -736,18 +709,16 @@ fn schema2parameters(
             // If there's a local object, add its members to the list of
             // parameters.
             if let Some(object) = object {
-                parameters.extend(object.properties.iter().map(
-                    |(name, schema)| {
-                        ApiEndpointParameter::new_named(
-                            loc,
-                            name.clone(),
-                            None,
-                            required && object.required.contains(name),
-                            ApiSchemaGenerator::Static(schema.clone()),
-                            vec![],
-                        )
-                    },
-                ));
+                parameters.extend(object.properties.iter().map(|(name, schema)| {
+                    ApiEndpointParameter::new_named(
+                        loc,
+                        name.clone(),
+                        None,
+                        required && object.required.contains(name),
+                        ApiSchemaGenerator::Static(schema.clone()),
+                        vec![],
+                    )
+                }));
             }
 
             // We might see subschemas here in the case of flattened enums
@@ -763,17 +734,10 @@ fn schema2parameters(
                         if_schema: None,
                         then_schema: None,
                         else_schema: None,
-                    } => parameters.extend(schemas.iter().flat_map(
-                        |subschema| {
-                            // Note that all these parameters will be optional.
-                            schema2parameters(
-                                loc,
-                                subschema,
-                                definitions,
-                                false,
-                            )
-                        },
-                    )),
+                    } => parameters.extend(schemas.iter().flat_map(|subschema| {
+                        // Note that all these parameters will be optional.
+                        schema2parameters(loc, subschema, definitions, false)
+                    })),
 
                     // With an all_of, there should be a single element. We
                     // typically see this in the case where there is a doc
@@ -787,16 +751,11 @@ fn schema2parameters(
                         if_schema: None,
                         then_schema: None,
                         else_schema: None,
-                    } if schemas.len() == 1 => parameters.extend(
-                        schemas.iter().flat_map(|subschema| {
-                            schema2parameters(
-                                loc,
-                                subschema,
-                                definitions,
-                                required,
-                            )
-                        }),
-                    ),
+                    } if schemas.len() == 1 => {
+                        parameters.extend(schemas.iter().flat_map(|subschema| {
+                            schema2parameters(loc, subschema, definitions, required)
+                        }))
+                    }
 
                     // We don't expect any other types of subschemas.
                     invalid => panic!("invalid subschema {:#?}", invalid),
@@ -826,9 +785,7 @@ pub struct TypedBody<BodyType: JsonSchema + DeserializeOwned + Send + Sync> {
     inner: BodyType,
 }
 
-impl<BodyType: JsonSchema + DeserializeOwned + Send + Sync>
-    TypedBody<BodyType>
-{
+impl<BodyType: JsonSchema + DeserializeOwned + Send + Sync> TypedBody<BodyType> {
     /*
      * TODO drop this in favor of Deref?  + Display and Debug for convenience?
      */
@@ -849,17 +806,11 @@ where
 {
     let server = &rqctx.server;
     let mut request = rqctx.request.lock().await;
-    let body_bytes = http_read_body(
-        request.body_mut(),
-        server.config.request_body_max_bytes,
-    )
-    .await?;
-    let value: Result<BodyType, serde_json::Error> =
-        serde_json::from_slice(&body_bytes);
+    let body_bytes =
+        http_read_body(request.body_mut(), server.config.request_body_max_bytes).await?;
+    let value: Result<BodyType, serde_json::Error> = serde_json::from_slice(&body_bytes);
     match value {
-        Ok(j) => Ok(TypedBody {
-            inner: j,
-        }),
+        Ok(j) => Ok(TypedBody { inner: j }),
         Err(e) => Err(HttpError::for_bad_request(
             None,
             format!("unable to parse body: {}", e),
@@ -880,9 +831,7 @@ impl<BodyType> Extractor for TypedBody<BodyType>
 where
     BodyType: JsonSchema + DeserializeOwned + Send + Sync + 'static,
 {
-    async fn from_request(
-        rqctx: Arc<RequestContext>,
-    ) -> Result<TypedBody<BodyType>, HttpError> {
+    async fn from_request(rqctx: Arc<RequestContext>) -> Result<TypedBody<BodyType>, HttpError> {
         http_request_load_json_body(rqctx).await
     }
 
@@ -951,9 +900,7 @@ impl HttpResponse for Response<Body> {
  * that we provide. We use it in particular to encode the success status code
  * and the type information of the return value.
  */
-pub trait HttpTypedResponse:
-    Into<HttpHandlerResult> + Send + Sync + 'static
-{
+pub trait HttpTypedResponse: Into<HttpHandlerResult> + Send + Sync + 'static {
     type Body: JsonSchema + Serialize;
     const STATUS_CODE: StatusCode;
     const DESCRIPTION: &'static str;
@@ -1002,9 +949,7 @@ where
  * could restrict this to an ApiObject::View (by having T: ApiObject and the
  * field having type T::View).
  */
-pub struct HttpResponseCreated<
-    T: JsonSchema + Serialize + Send + Sync + 'static,
->(pub T);
+pub struct HttpResponseCreated<T: JsonSchema + Serialize + Send + Sync + 'static>(pub T);
 impl<T: JsonSchema + Serialize + Send + Sync + 'static> HttpTypedResponse
     for HttpResponseCreated<T>
 {
@@ -1012,8 +957,8 @@ impl<T: JsonSchema + Serialize + Send + Sync + 'static> HttpTypedResponse
     const STATUS_CODE: StatusCode = StatusCode::CREATED;
     const DESCRIPTION: &'static str = "successful creation";
 }
-impl<T: JsonSchema + Serialize + Send + Sync + 'static>
-    From<HttpResponseCreated<T>> for HttpHandlerResult
+impl<T: JsonSchema + Serialize + Send + Sync + 'static> From<HttpResponseCreated<T>>
+    for HttpHandlerResult
 {
     fn from(response: HttpResponseCreated<T>) -> HttpHandlerResult {
         /* TODO-correctness (or polish?): add Location header */
@@ -1026,9 +971,7 @@ impl<T: JsonSchema + Serialize + Send + Sync + 'static>
  * serializable type.  It denotes an HTTP 202 "Accepted" response whose body is
  * generated by serializing the object.
  */
-pub struct HttpResponseAccepted<
-    T: JsonSchema + Serialize + Send + Sync + 'static,
->(pub T);
+pub struct HttpResponseAccepted<T: JsonSchema + Serialize + Send + Sync + 'static>(pub T);
 impl<T: JsonSchema + Serialize + Send + Sync + 'static> HttpTypedResponse
     for HttpResponseAccepted<T>
 {
@@ -1036,8 +979,8 @@ impl<T: JsonSchema + Serialize + Send + Sync + 'static> HttpTypedResponse
     const STATUS_CODE: StatusCode = StatusCode::ACCEPTED;
     const DESCRIPTION: &'static str = "successfully enqueued operation";
 }
-impl<T: JsonSchema + Serialize + Send + Sync + 'static>
-    From<HttpResponseAccepted<T>> for HttpHandlerResult
+impl<T: JsonSchema + Serialize + Send + Sync + 'static> From<HttpResponseAccepted<T>>
+    for HttpHandlerResult
 {
     fn from(response: HttpResponseAccepted<T>) -> HttpHandlerResult {
         HttpResponseAccepted::for_object(&response.0)
@@ -1049,12 +992,8 @@ impl<T: JsonSchema + Serialize + Send + Sync + 'static>
  * denotes an HTTP 200 "OK" response whose body is generated by serializing the
  * object.
  */
-pub struct HttpResponseOk<T: JsonSchema + Serialize + Send + Sync + 'static>(
-    pub T,
-);
-impl<T: JsonSchema + Serialize + Send + Sync + 'static> HttpTypedResponse
-    for HttpResponseOk<T>
-{
+pub struct HttpResponseOk<T: JsonSchema + Serialize + Send + Sync + 'static>(pub T);
+impl<T: JsonSchema + Serialize + Send + Sync + 'static> HttpTypedResponse for HttpResponseOk<T> {
     type Body = T;
     const STATUS_CODE: StatusCode = StatusCode::OK;
     const DESCRIPTION: &'static str = "successful operation";
@@ -1145,8 +1084,10 @@ mod test {
          * This is order-dependent. We might not really care if the order
          * changes, but it will be interesting to understand why if it does.
          */
-        actual.iter().zip(expected.iter()).for_each(
-            |(param, (name, required))| {
+        actual
+            .iter()
+            .zip(expected.iter())
+            .for_each(|(param, (name, required))| {
                 if let ApiEndpointParameter {
                     name: ApiEndpointParameterName::Path(aname),
                     required: arequired,
@@ -1158,8 +1099,7 @@ mod test {
                 } else {
                     panic!();
                 }
-            },
-        );
+            });
     }
 
     #[test]
@@ -1199,9 +1139,7 @@ mod test {
 
     #[test]
     fn test_metadata_pagination() {
-        let params = PaginationParams::<A, A>::metadata(
-            &ApiEndpointParameterLocation::Path,
-        );
+        let params = PaginationParams::<A, A>::metadata(&ApiEndpointParameterLocation::Path);
         let expected = vec![
             ("limit", false),
             ("page_token", false),
