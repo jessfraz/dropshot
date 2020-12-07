@@ -498,6 +498,7 @@ where
  * structure of yours that implements `serde::Deserialize`.  See this module's
  * documentation for more information.
  */
+#[derive(Debug)]
 pub struct Query<QueryType: DeserializeOwned + JsonSchema + Send + Sync> {
     inner: QueryType,
 }
@@ -782,6 +783,7 @@ fn schema2parameters(
  * that implements `serde::Deserialize`.  See this module's documentation for
  * more information.
  */
+#[derive(Debug)]
 pub struct TypedBody<BodyType: JsonSchema + DeserializeOwned + Send + Sync> {
     inner: BodyType,
 }
