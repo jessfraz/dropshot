@@ -34,6 +34,7 @@ type GenericError = Box<dyn std::error::Error + Send + Sync>;
 /**
  * Stores shared state used by the Dropshot server.
  */
+#[derive(Debug)]
 pub struct DropshotState {
     /** caller-specific state */
     pub private: Arc<dyn Any + Send + Sync + 'static>,
@@ -49,6 +50,7 @@ pub struct DropshotState {
  * Stores static configuration associated with the server
  * TODO-cleanup merge with ConfigDropshot
  */
+#[derive(Debug)]
 pub struct ServerConfig {
     /** maximum allowed size of a request body */
     pub request_body_max_bytes: usize,

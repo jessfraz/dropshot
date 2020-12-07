@@ -83,6 +83,7 @@ pub type HttpHandlerResult = Result<Response<Body>, HttpError>;
  * overkill since it will only really be used by one thread at a time (at all,
  * let alone mutably) and there will never be contention on the Mutex.
  */
+#[derive(Debug)]
 pub struct RequestContext {
     /** shared server state */
     pub server: Arc<DropshotState>,
